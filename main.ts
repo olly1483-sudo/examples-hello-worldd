@@ -7,7 +7,7 @@ function page(title: string, body: string, isKey = false) {
   const inner = isKey
     ? `<div id="k" style="font-size:22px;letter-spacing:1px;background:#1c1c28;padding:16px 20px;border-radius:12px;display:inline-block">${body}</div>
        <p><button onclick="navigator.clipboard.writeText(document.getElementById('k').innerText);this.innerText='Copied'" style="padding:12px 22px;border:0;border-radius:10px;background:#d4af37;font-weight:700;font-size:15px">Copy key</button></p>
-       <p style="color:#999">Valid for ${KEY_HOURS} hours on one device.</p>`
+       <p style="color:#999">Vali for ${KEY_HOURS} hours on one device.</p>`
     : `<p>${body}</p>`;
   return new Response(
     `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
