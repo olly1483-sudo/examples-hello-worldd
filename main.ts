@@ -1,6 +1,7 @@
 // Cake Farm key server — Deno Deploy
 const KEY_HOURS = 24;
 const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
+const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
 const kv = await Deno.openKv();
 
 const BG = "#10101a", GOLD = "#d4af37";
@@ -36,22 +37,18 @@ function randomKey() {
   return "CAKE-" + s;
 }
 
-// Returns { ok, status, body } so the caller can show debug on failure.
 async function verifyHash(hash: string) {
   const url = "https://publisher.linkvertise.com/api/v1/anti_bypassing?token=" +
     encodeURIComponent(LV_TOKEN) + "&hash=" + encodeURIComponent(hash);
   const r = await fetch(url, { method: "POST" });
   const raw = (await r.text()).trim();
-
-  // Linkvertise may answer with bare "true"/"TRUE" or JSON like {"status":true}.
   let ok = raw.toUpperCase() === "TRUE";
   if (!ok) {
     try {
       const j = JSON.parse(raw);
       ok = j === true || j?.status === true || String(j?.status).toUpperCase() === "TRUE" ||
            String(j?.result).toUpperCase() === "TRUE" || j?.success === true;
-    } catch { /* not JSON, leave ok=false */ }
-  }
+    } catch { /* not JSON */ }  }
   return { ok, status: r.status, body: raw };
 }
 
@@ -60,20 +57,15 @@ async function claim(url: URL) {
   if (!hash) {
     return msg("Finish the link first", "Open the Linkvertise link and complete every step, then you'll land back here with your key.");
   }
-
   if ((await kv.get(["hash", hash])).value) {
     return msg("Link already used", "That link was already redeemed. Start again from the Linkvertise link to get a fresh key.");
   }
-
   const v = await verifyHash(hash);
   if (!v.ok) {
-    // Visible debug so we can see exactly what Linkvertise returned.
     return msg("DEBUG — not verified",
       `status = ${v.status}<br>body = "${v.body || "(empty)"}"<br>tokenLen = ${LV_TOKEN.length}<br>hash = "${hash}"`);
   }
-
   await kv.set(["hash", hash], true, { expireIn: 3600 * 1000 });
-
   const key = randomKey();
   await kv.set(["key", key], { made: Date.now(), id: null }, { expireIn: KEY_HOURS * 3600 * 1000 });
   return keyPage(key);
@@ -87,7 +79,6 @@ async function script(url: URL) {
   const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
-
   if (Date.now() - data.made > KEY_HOURS * 3600 * 1000) {
     await kv.delete(["key", key]);
     return text("ERR:invalid or expired key");
@@ -108,6 +99,46 @@ async function loader() {
   const s = await kv.get<string>(["loader"]);
   return text(s.value || "warn('loader not uploaded')");
 }
+function adminPage(msgText = "") {
+  return new Response(
+    `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="background:${BG};color:#eee;font-family:system-ui,sans-serif;padding:24px 16px;max-width:600px;margin:0 auto">
+<h2 style="color:${GOLD}">Upload</h2>
+${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
+<form method="POST" action="/admin">
+<label>Password<br><input type="password" name="pass" style="width:100%;padding:10px;margin:6px 0 16px;border-radius:8px;border:0" required></label><br>
+<label>Which slot<br>
+<select name="slot" style="width:100%;padding:10px;margin:6px 0 16px;border-radius:8px">
+<option value="script">script (the farm script)</option>
+<option value="loader">loader (the small loader code)</option>
+</select></label><br>
+<label>Paste the full code below<br>
+<textarea name="content" rows="14" style="width:100%;padding:10px;margin:6px 0 16px;border-radius:8px;font-family:monospace;font-size:13px" required></textarea></label><br>
+<button type="submit" style="padding:14px 24px;border:0;border-radius:10px;background:${GOLD};font-weight:700;font-size:16px;width:100%">Save</button>
+</form>
+</body>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+async function adminPost(req: Request) {
+  const form = await req.formData();
+  const pass = String(form.get("pass") || "");
+  const slot = String(form.get("slot") || "");
+  const content = String(form.get("content") || "");
+  if (!ADMIN_TOKEN || pass !== ADMIN_TOKEN) {
+    return adminPage("Wrong password.");
+  }
+  if (slot !== "script" && slot !== "loader") {
+    return adminPage("Invalid slot.");
+  }
+  if (!content.trim()) {
+    return adminPage("Nothing pasted.");
+  }
+
+  await kv.set([slot], content);
+  return adminPage(`Saved ${slot} — ${content.length} characters.`);
+}
 
 Deno.serve(async (req) => {
   const url = new URL(req.url);
@@ -116,6 +147,9 @@ Deno.serve(async (req) => {
     case "/script": return script(url);
     case "/loader": return loader();
     case "/health": return text("ok v2");
+    case "/admin":
+      if (req.method === "POST") return adminPost(req);
+      return adminPage();
     default: return text("ok");
   }
 });
