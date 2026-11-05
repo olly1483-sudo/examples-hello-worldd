@@ -48,7 +48,8 @@ async function verifyHash(hash: string) {
       const j = JSON.parse(raw);
       ok = j === true || j?.status === true || String(j?.status).toUpperCase() === "TRUE" ||
            String(j?.result).toUpperCase() === "TRUE" || j?.success === true;
-    } catch { /* not JSON */ }  }
+    } catch { /* not JSON */ }
+  }
   return { ok, status: r.status, body: raw };
 }
 
@@ -79,6 +80,7 @@ async function script(url: URL) {
   const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
+
   if (Date.now() - data.made > KEY_HOURS * 3600 * 1000) {
     await kv.delete(["key", key]);
     return text("ERR:invalid or expired key");
@@ -99,6 +101,7 @@ async function loader() {
   const s = await kv.get<string>(["loader"]);
   return text(s.value || "warn('loader not uploaded')");
 }
+
 function adminPage(msgText = "") {
   return new Response(
     `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -122,22 +125,27 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 }
 
 async function adminPost(req: Request) {
-  const form = await req.formData();
-  const pass = String(form.get("pass") || "");
-  const slot = String(form.get("slot") || "");
-  const content = String(form.get("content") || "");
-  if (!ADMIN_TOKEN || pass !== ADMIN_TOKEN) {
-    return adminPage("Wrong password.");
-  }
-  if (slot !== "script" && slot !== "loader") {
-    return adminPage("Invalid slot.");
-  }
-  if (!content.trim()) {
-    return adminPage("Nothing pasted.");
-  }
+  try {
+    const form = await req.formData();
+    const pass = String(form.get("pass") || "");
+    const slot = String(form.get("slot") || "");
+    const content = String(form.get("content") || "");
 
-  await kv.set([slot], content);
-  return adminPage(`Saved ${slot} — ${content.length} characters.`);
+    if (!ADMIN_TOKEN || pass !== ADMIN_TOKEN) {
+      return adminPage("Wrong password.");
+    }
+    if (slot !== "script" && slot !== "loader") {
+      return adminPage("Invalid slot.");
+    }
+    if (!content.trim()) {
+      return adminPage("Nothing pasted.");
+    }
+
+    await kv.set([slot], content);
+    return adminPage(`Saved ${slot} — ${content.length} characters.`);
+  } catch (e) {
+    return adminPage(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 Deno.serve(async (req) => {
