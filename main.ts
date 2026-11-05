@@ -5,7 +5,7 @@ const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
 const kv = await Deno.openKv();
 
 const BG = "#10101a", GOLD = "#d4af37";
-const CHUNK_SIZE = 60000;
+const CHUNK_SIZE = 30000;
 
 function html(title: string, inner: string) {
   return new Response(
