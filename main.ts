@@ -5,6 +5,7 @@ const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
 const kv = await Deno.openKv();
 
 const BG = "#10101a", GOLD = "#d4af37";
+const CHUNK_SIZE = 60000;
 
 function html(title: string, inner: string) {
   return new Response(
@@ -35,6 +36,36 @@ function randomKey() {
   let s = "";
   for (let i = 0; i < 16; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return "CAKE-" + s;
+}
+
+// Store large text across multiple KV keys to dodge the 64KB per-value limit.
+async function saveChunked(slot: string, content: string) {
+  const parts: string[] = [];
+  for (let i = 0; i < content.length; i += CHUNK_SIZE) {
+    parts.push(content.slice(i, i + CHUNK_SIZE));
+  }
+  // Clear any old chunks beyond the new count.
+  const oldCount = (await kv.get<number>([slot, "count"])).value || 0;
+  for (let i = 0; i < Math.max(oldCount, parts.length); i++) {
+    if (i < parts.length) {
+      await kv.set([slot, "part", i], parts[i]);
+    } else {
+      await kv.delete([slot, "part", i]);
+    }
+  }
+  await kv.set([slot, "count"], parts.length);
+}
+
+async function loadChunked(slot: string): Promise<string | null> {
+  const count = (await kv.get<number>([slot, "count"])).value;
+  if (!count) return null;
+  let out = "";
+  for (let i = 0; i < count; i++) {
+    const p = await kv.get<string>([slot, "part", i]);
+    if (p.value == null) return null;
+    out += p.value;
+  }
+  return out;
 }
 
 async function verifyHash(hash: string) {
@@ -80,7 +111,6 @@ async function script(url: URL) {
   const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
-
   if (Date.now() - data.made > KEY_HOURS * 3600 * 1000) {
     await kv.delete(["key", key]);
     return text("ERR:invalid or expired key");
@@ -93,13 +123,13 @@ async function script(url: URL) {
     await kv.set(["key", key], data, { expireIn: left });
   }
 
-  const s = await kv.get<string>(["script"]);
-  return text(s.value || "ERR:script not uploaded yet");
+  const s = await loadChunked("script");
+  return text(s || "ERR:script not uploaded yet");
 }
 
 async function loader() {
-  const s = await kv.get<string>(["loader"]);
-  return text(s.value || "warn('loader not uploaded')");
+  const s = await loadChunked("loader");
+  return text(s || "warn('loader not uploaded')");
 }
 
 function adminPage(msgText = "") {
@@ -141,7 +171,7 @@ async function adminPost(req: Request) {
       return adminPage("Nothing pasted.");
     }
 
-    await kv.set([slot], content);
+    await saveChunked(slot, content);
     return adminPage(`Saved ${slot} — ${content.length} characters.`);
   } catch (e) {
     return adminPage(`ERROR: ${e instanceof Error ? e.message : String(e)}`);
@@ -154,7 +184,7 @@ Deno.serve(async (req) => {
     case "/claim": return claim(url);
     case "/script": return script(url);
     case "/loader": return loader();
-    case "/health": return text("ok v2");
+    case "/health": return text("ok v3");
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
