@@ -1,4 +1,4 @@
-// Olly Scripts key server — Deno Deploy (multi-game + owner keys)
+// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning)
 const KEY_HOURS = 24;
 const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
 const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
@@ -32,6 +32,10 @@ function msg(title: string, body: string) {
 
 function text(body: string) {
   return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
+}
+
+function json(data: unknown) {
+  return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 }
 
 function randomKey() {
@@ -107,7 +111,6 @@ async function script(url: URL) {
 
   const slot = game ? "script_" + game : "script";
 
-  // Owner keys: never expire, work on any device
   if (OWNER_KEYS.includes(key)) {
     const s = await loadChunked(slot);
     return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
@@ -138,6 +141,70 @@ async function loader() {
   return text(s || "warn('loader not uploaded')");
 }
 
+// ── Don't Say The Obvious: shared learning ──────────────────────────
+// stored per question: { answer: { s: average share, n: times seen } }
+type Bucket = Record<string, { s: number; n: number }>;
+const MAX_PER_PROMPT = 400;
+const PROMPT_RE = /^name [a-z0-9 ()'&,\-]{2,70}$/;
+const ANSWER_RE = /^[a-z0-9 '&\-.]{1,40}$/;
+let pullCache: { at: number; body: string } | null = null;
+
+async function dsoPush(req: Request) {
+  let body: { items?: { p?: unknown; a?: unknown; s?: unknown }[] };
+  try { body = await req.json(); } catch { return json({ ok: false, err: "bad json" }); }
+  const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
+
+  // group the clean items by question
+  const groups = new Map<string, { a: string; s: number }[]>();
+  for (const it of items) {
+    const p = String(it.p ?? "").toLowerCase().trim();
+    const a = String(it.a ?? "").toLowerCase().trim();
+    const s = Number(it.s);
+    if (!PROMPT_RE.test(p) || !ANSWER_RE.test(a) || !isFinite(s) || s < 0 || s > 1) continue;
+    if (!groups.has(p)) groups.set(p, []);
+    groups.get(p)!.push({ a, s });
+  }
+
+  for (const [p, list] of groups) {
+    const cur = (await kv.get<Bucket>(["dso", p])).value || {};
+    for (const { a, s } of list) {
+      const e = cur[a];
+      if (!e) cur[a] = { s, n: 1 };
+      else {
+        const n = Math.min(e.n, 50);           // keep it able to move with new data
+        e.s = (e.s * n + s) / (n + 1);
+        e.n = e.n + 1;
+      }
+    }
+    // keep the list small: drop the most common answers first
+    const keys = Object.keys(cur);
+    if (keys.length > MAX_PER_PROMPT) {
+      keys.sort((x, y) => cur[x].s - cur[y].s);
+      for (const k of keys.slice(MAX_PER_PROMPT)) delete cur[k];
+    }
+    await kv.set(["dso", p], cur);
+  }
+  pullCache = null;
+  return json({ ok: true, saved: items.length });
+}
+
+async function dsoPull() {
+  if (pullCache && Date.now() - pullCache.at < 60000) {
+    return new Response(pullCache.body, { headers: { "content-type": "application/json" } });
+  }
+  const out: Record<string, Record<string, number>> = {};
+  for await (const entry of kv.list<Bucket>({ prefix: ["dso"] })) {
+    const p = String(entry.key[1]);
+    const bucket = entry.value || {};
+    out[p] = {};
+    for (const [a, e] of Object.entries(bucket)) out[p][a] = Math.round(e.s * 100000) / 100000;
+  }
+  const body = JSON.stringify(out);
+  pullCache = { at: Date.now(), body };
+  return new Response(body, { headers: { "content-type": "application/json" } });
+}
+
+// ── admin ───────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
     `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -151,6 +218,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script">script — Medieval Life (cake farm)</option>
 <option value="script_wordrush">script_wordrush — Word Rush</option>
 <option value="script_wordbattle">script_wordbattle — Word Battle</option>
+<option value="script_dso">script_dso — Don't Say The Obvious</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -189,7 +257,9 @@ Deno.serve(async (req) => {
     case "/claim": return claim(url);
     case "/script": return script(url);
     case "/loader": return loader();
-    case "/health": return text(`ok v5 · owner keys: ${OWNER_KEYS.length}`);
+    case "/dso/push": return req.method === "POST" ? dsoPush(req) : json({ ok: false });
+    case "/dso/pull": return dsoPull();
+    case "/health": return text(`ok v6 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
