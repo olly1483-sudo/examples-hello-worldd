@@ -1,7 +1,9 @@
-// Olly Scripts key server — Deno Deploy (multi-game)
+// Olly Scripts key server — Deno Deploy (multi-game + owner keys)
 const KEY_HOURS = 24;
 const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
 const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
+const OWNER_KEYS = (Deno.env.get("OWNER_KEYS") || "")
+  .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
 const kv = await Deno.openKv();
 
 const BG = "#10101a", GOLD = "#d4af37";
@@ -103,6 +105,14 @@ async function script(url: URL) {
   const game = (url.searchParams.get("game") || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
   if (!key || !id) return text("ERR:missing key");
 
+  const slot = game ? "script_" + game : "script";
+
+  // Owner keys: never expire, work on any device
+  if (OWNER_KEYS.includes(key)) {
+    const s = await loadChunked(slot);
+    return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
+  }
+
   const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
@@ -119,7 +129,6 @@ async function script(url: URL) {
     await kv.set(["key", key], data, { expireIn: left });
   }
 
-  const slot = game ? "script_" + game : "script";
   const s = await loadChunked(slot);
   return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
 }
@@ -141,6 +150,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <select name="slot" style="width:100%;padding:10px;margin:6px 0 8px;border-radius:8px">
 <option value="script">script — Medieval Life (cake farm)</option>
 <option value="script_wordrush">script_wordrush — Word Rush</option>
+<option value="script_wordbattle">script_wordbattle — Word Battle</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -179,7 +189,7 @@ Deno.serve(async (req) => {
     case "/claim": return claim(url);
     case "/script": return script(url);
     case "/loader": return loader();
-    case "/health": return text("ok v4");
+    case "/health": return text(`ok v5 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
