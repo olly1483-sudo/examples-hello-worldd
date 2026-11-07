@@ -142,7 +142,6 @@ async function loader() {
 }
 
 // ── Don't Say The Obvious: shared learning ──────────────────────────
-// stored per question: { answer: { s: average share, n: times seen } }
 type Bucket = Record<string, { s: number; n: number }>;
 const MAX_PER_PROMPT = 400;
 const PROMPT_RE = /^name [a-z0-9 ()'&,\-]{2,70}$/;
@@ -154,7 +153,6 @@ async function dsoPush(req: Request) {
   try { body = await req.json(); } catch { return json({ ok: false, err: "bad json" }); }
   const items = Array.isArray(body.items) ? body.items.slice(0, 200) : [];
 
-  // group the clean items by question
   const groups = new Map<string, { a: string; s: number }[]>();
   for (const it of items) {
     const p = String(it.p ?? "").toLowerCase().trim();
@@ -171,12 +169,11 @@ async function dsoPush(req: Request) {
       const e = cur[a];
       if (!e) cur[a] = { s, n: 1 };
       else {
-        const n = Math.min(e.n, 50);           // keep it able to move with new data
+        const n = Math.min(e.n, 50);
         e.s = (e.s * n + s) / (n + 1);
         e.n = e.n + 1;
       }
     }
-    // keep the list small: drop the most common answers first
     const keys = Object.keys(cur);
     if (keys.length > MAX_PER_PROMPT) {
       keys.sort((x, y) => cur[x].s - cur[y].s);
@@ -204,6 +201,79 @@ async function dsoPull() {
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
+// ── Make The Logo: shared answer key ────────────────────────────────
+// one KV record holds every logo: { logo: { p: pieces, n: votes, a?: { p, n } } }
+type MtlPieces = Record<string, { X: number; Y: number; L: number }>;
+type MtlEntry = { p: MtlPieces; n: number; a?: { p: MtlPieces; n: number } };
+const LOGO_RE = /^[\x20-\x7e]{1,40}$/;
+const PIECE_RE = /^p\d{1,2}$/;
+let mtlCache: { at: number; body: string } | null = null;
+
+function cleanPieces(raw: unknown): MtlPieces | null {
+  if (!raw || typeof raw !== "object") return null;
+  const out: MtlPieces = {};
+  let n = 0;
+  for (const [id, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!PIECE_RE.test(id) || !v || typeof v !== "object") return null;
+    const o = v as Record<string, unknown>;
+    const X = Number(o.X), Y = Number(o.Y), L = Number(o.L ?? 0);
+    if (!isFinite(X) || !isFinite(Y) || X < 0 || X > 1 || Y < 0 || Y > 1) return null;
+    out[id] = { X: Math.round(X * 1e5) / 1e5, Y: Math.round(Y * 1e5) / 1e5, L: isFinite(L) ? Math.round(L) : 0 };
+    if (++n > 12) return null;
+  }
+  return n > 0 ? out : null;
+}
+
+function samePieces(a: MtlPieces, b: MtlPieces) {
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    const x = a[k], y = b[k];
+    if (!y || Math.abs(x.X - y.X) > 0.01 || Math.abs(x.Y - y.Y) > 0.01) return false;
+  }
+  return true;
+}
+
+async function mtlPush(req: Request) {
+  let body: { logos?: Record<string, unknown> };
+  try { body = await req.json(); } catch { return json({ ok: false, err: "bad json" }); }
+  const logos = body.logos && typeof body.logos === "object" ? body.logos : {};
+  const all = (await kv.get<Record<string, MtlEntry>>(["mtl", "all"])).value || {};
+  let saved = 0;
+  for (const [name, raw] of Object.entries(logos).slice(0, 40)) {
+    if (!LOGO_RE.test(name)) continue;
+    const p = cleanPieces(raw);
+    if (!p) continue;
+    const cur = all[name];
+    if (!cur) {
+      if (Object.keys(all).length >= 500) continue;
+      all[name] = { p, n: 1 };
+    } else if (samePieces(cur.p, p)) {
+      cur.n = Math.min(cur.n + 1, 1000);
+    } else {
+      // a different answer: count it separately; it only takes over if more players agree
+      if (cur.a && samePieces(cur.a.p, p)) cur.a.n = Math.min(cur.a.n + 1, 1000);
+      else cur.a = { p, n: 1 };
+      if (cur.a.n > cur.n) { const old = { p: cur.p, n: cur.n }; cur.p = cur.a.p; cur.n = cur.a.n; cur.a = old; }
+    }
+    saved++;
+  }
+  if (saved > 0) { await kv.set(["mtl", "all"], all); mtlCache = null; }
+  return json({ ok: true, saved });
+}
+
+async function mtlPull() {
+  if (mtlCache && Date.now() - mtlCache.at < 60000) {
+    return new Response(mtlCache.body, { headers: { "content-type": "application/json" } });
+  }
+  const all = (await kv.get<Record<string, MtlEntry>>(["mtl", "all"])).value || {};
+  const out: Record<string, MtlPieces> = {};
+  for (const [name, e] of Object.entries(all)) out[name] = e.p;
+  const body = JSON.stringify(out);
+  mtlCache = { at: Date.now(), body };
+  return new Response(body, { headers: { "content-type": "application/json" } });
+}
+
 // ── admin ───────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
@@ -219,6 +289,8 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_wordrush">script_wordrush — Word Rush</option>
 <option value="script_wordbattle">script_wordbattle — Word Battle</option>
 <option value="script_dso">script_dso — Don't Say The Obvious</option>
+<option value="script_hid">script_hid — Hide In Drawings</option>
+<option value="script_mtl">script_mtl — Make The Logo</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -259,7 +331,9 @@ Deno.serve(async (req) => {
     case "/loader": return loader();
     case "/dso/push": return req.method === "POST" ? dsoPush(req) : json({ ok: false });
     case "/dso/pull": return dsoPull();
-    case "/health": return text(`ok v6 · owner keys: ${OWNER_KEYS.length}`);
+    case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
+    case "/mtl/pull": return mtlPull();
+    case "/health": return text(`ok v7 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
