@@ -1,4 +1,4 @@
-// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning)
+// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning + usage stats)
 const KEY_HOURS = 24;
 const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
 const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
@@ -84,6 +84,23 @@ async function verifyHash(hash: string) {
   return { ok, status: r.status, body: raw };
 }
 
+// ── usage tracking ─────────────────────────────────────────────────────
+function dayStamp(d = new Date()) {
+  return d.toISOString().slice(0, 10);
+}
+
+async function trackRun(game: string, id: string, owner: boolean) {
+  const slot = game || "medieval";
+  const day = dayStamp();
+  const seen = await kv.get(["seen", day, slot, id]);
+  if (!seen.value) {
+    await kv.set(["seen", day, slot, id], { t: Date.now(), owner }, { expireIn: 30 * 86400 * 1000 });
+    const c = (await kv.get<number>(["runs", day, slot])).value || 0;
+    await kv.set(["runs", day, slot], c + 1, { expireIn: 40 * 86400 * 1000 });
+  }
+  await kv.set(["last", slot, id], { t: Date.now(), owner }, { expireIn: 7 * 86400 * 1000 });
+}
+
 async function claim(url: URL) {
   const hash = url.searchParams.get("hash");
   if (!hash) {
@@ -100,6 +117,10 @@ async function claim(url: URL) {
   await kv.set(["hash", hash], true, { expireIn: 3600 * 1000 });
   const key = randomKey();
   await kv.set(["key", key], { made: Date.now(), id: null }, { expireIn: KEY_HOURS * 3600 * 1000 });
+  const game = (url.searchParams.get("game") || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const day = dayStamp();
+  const c = (await kv.get<number>(["claims", day, game || "medieval"])).value || 0;
+  await kv.set(["claims", day, game || "medieval"], c + 1, { expireIn: 40 * 86400 * 1000 });
   return keyPage(key);
 }
 
@@ -112,6 +133,7 @@ async function script(url: URL) {
   const slot = game ? "script_" + game : "script";
 
   if (OWNER_KEYS.includes(key)) {
+    await trackRun(game, id, true);
     const s = await loadChunked(slot);
     return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
   }
@@ -132,6 +154,7 @@ async function script(url: URL) {
     await kv.set(["key", key], data, { expireIn: left });
   }
 
+  await trackRun(game, id, false);
   const s = await loadChunked(slot);
   return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
 }
@@ -141,7 +164,7 @@ async function loader() {
   return text(s || "warn('loader not uploaded')");
 }
 
-// ── Don't Say The Obvious: shared learning ──────────────────────────
+// ── Don't Say The Obvious: shared learning ────────────────────────────
 type Bucket = Record<string, { s: number; n: number }>;
 const MAX_PER_PROMPT = 400;
 const PROMPT_RE = /^name [a-z0-9 ()'&,\-]{2,70}$/;
@@ -201,7 +224,7 @@ async function dsoPull() {
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-// ── Make The Logo: shared answer key (pieces keyed by image id) ─────
+// ── Make The Logo: shared answer key (pieces keyed by image id) ───────
 type MtlPieces = Record<string, { X: number; Y: number; L: number }>;
 type MtlEntry = { p: MtlPieces; n: number; a?: { p: MtlPieces; n: number } };
 const LOGO_RE = /^[\x20-\x7e]{1,40}$/;
@@ -273,7 +296,84 @@ async function mtlPull() {
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-// ── admin ───────────────────────────────────────────────────────────
+// ── usage dashboard ───────────────────────────────────────────────────
+const GAME_NAMES: Record<string, string> = {
+  medieval: "Medieval Life",
+  wordrush: "Word Rush",
+  wordbattle: "Word Battle",
+  dso: "Don't Say The Obvious",
+  hid: "Hide In Drawings",
+  mtl: "Make The Logo",
+};
+function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
+
+async function statsPage(url: URL) {
+  if (!ADMIN_TOKEN || url.searchParams.get("pass") !== ADMIN_TOKEN) {
+    return html("Usage", `<p style="color:#999">Add <code>?pass=YOURPASSWORD</code> to the address.</p>`);
+  }
+  const days: string[] = [];
+  for (let i = 0; i < 7; i++) days.push(dayStamp(new Date(Date.now() - i * 86400000)));
+
+  const runs: Record<string, Record<string, number>> = {};
+  const claims: Record<string, Record<string, number>> = {};
+  const slots = new Set<string>();
+  for (const day of days) {
+    runs[day] = {}; claims[day] = {};
+    for await (const e of kv.list<number>({ prefix: ["runs", day] })) {
+      const s = String(e.key[2]); slots.add(s); runs[day][s] = e.value || 0;
+    }
+    for await (const e of kv.list<number>({ prefix: ["claims", day] })) {
+      const s = String(e.key[2]); slots.add(s); claims[day][s] = e.value || 0;
+    }
+  }
+
+  const now = Date.now();
+  let activeHour = 0, activeDay = 0;
+  const rowsRecent: { slot: string; id: string; mins: number }[] = [];
+  for await (const e of kv.list<{ t: number; owner?: boolean }>({ prefix: ["last"] })) {
+    const v = e.value;
+    if (!v || v.owner) continue;
+    const mins = Math.round((now - v.t) / 60000);
+    if (mins < 60) activeHour++;
+    if (mins < 1440) activeDay++;
+    rowsRecent.push({ slot: String(e.key[1]), id: String(e.key[2]), mins });
+  }
+  rowsRecent.sort((a, b) => a.mins - b.mins);
+
+  const slotList = [...slots].sort();
+  const head = slotList.map((s) => `<th>${gameName(s)}</th>`).join("");
+  const body7 = days.map((d) => {
+    const cells = slotList.map((s) => {
+      const r = runs[d][s] || 0, c = claims[d][s] || 0;
+      return `<td>${r}${c ? ` <span style="color:#777">(${c} keys)</span>` : ""}</td>`;
+    }).join("");
+    return `<tr><td>${d}</td>${cells}</tr>`;
+  }).join("");
+
+  const recentRows = rowsRecent.slice(0, 60).map((r) =>
+    `<tr><td>${gameName(r.slot)}</td><td>${r.id}</td><td>${r.mins < 1 ? "just now" : r.mins < 60 ? r.mins + "m ago" : Math.round(r.mins / 60) + "h ago"}</td></tr>`
+  ).join("") || `<tr><td colspan="3" style="color:#777">nobody yet</td></tr>`;
+
+  const tableCss = `border-collapse:collapse;font-size:13px;width:100%`;
+  const cell = `border:1px solid #2a2a3a;padding:7px 9px;text-align:left`;
+  return new Response(
+    `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<body style="background:${BG};color:#eee;font-family:system-ui,sans-serif;padding:20px 14px;max-width:900px;margin:0 auto">
+<style>td,th{${cell}}th{color:${GOLD}}</style>
+<h2 style="color:${GOLD};margin-bottom:4px">Script usage</h2>
+<p style="color:#999;font-size:12px;margin-top:0">refreshes every minute · your own runs are excluded</p>
+<p style="font-size:16px">Active last hour: <b style="color:${GOLD}">${activeHour}</b> &nbsp;·&nbsp; last 24h: <b style="color:${GOLD}">${activeDay}</b></p>
+<h3 style="color:${GOLD};font-size:15px">Unique users per day</h3>
+<div style="overflow-x:auto"><table style="${tableCss}"><tr><th>Day</th>${head || "<th>—</th>"}</tr>${body7}</table></div>
+<h3 style="color:${GOLD};font-size:15px">Who ran what, most recent first</h3>
+<div style="overflow-x:auto"><table style="${tableCss}"><tr><th>Game</th><th>Roblox user ID</th><th>When</th></tr>${recentRows}</table></div>
+</body>`,
+    { headers: { "content-type": "text/html; charset=utf-8" } },
+  );
+}
+
+// ── admin ─────────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
     `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -298,6 +398,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <textarea name="content" rows="14" style="width:100%;padding:10px;margin:6px 0 16px;border-radius:8px;font-family:monospace;font-size:13px" required></textarea></label><br>
 <button type="submit" style="padding:14px 24px;border:0;border-radius:10px;background:${GOLD};font-weight:700;font-size:16px;width:100%">Save</button>
 </form>
+<p style="margin-top:22px"><a href="/stats" style="color:${GOLD}">View usage stats →</a></p>
 </body>`,
     { headers: { "content-type": "text/html; charset=utf-8" } },
   );
@@ -332,7 +433,8 @@ Deno.serve(async (req) => {
     case "/dso/pull": return dsoPull();
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
-    case "/health": return text(`ok v8 · owner keys: ${OWNER_KEYS.length}`);
+    case "/stats": return statsPage(url);
+    case "/health": return text(`ok v9 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
