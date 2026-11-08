@@ -1,141 +1,3 @@
-// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning)
-const KEY_HOURS = 24;
-const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
-const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
-const OWNER_KEYS = (Deno.env.get("OWNER_KEYS") || "")
-  .split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
-const kv = await Deno.openKv();
-
-const BG = "#10101a", GOLD = "#d4af37";
-const CHUNK_SIZE = 30000;
-const SLOT_RE = /^(loader|script(_[a-z0-9]+)?)$/;
-
-function html(title: string, inner: string) {
-  return new Response(
-    `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1">
-<body style="background:${BG};color:#eee;font-family:system-ui,sans-serif;text-align:center;padding:48px 20px">
-<h2 style="color:${GOLD}">${title}</h2>${inner}</body>`,
-    { headers: { "content-type": "text/html; charset=utf-8" } },
-  );
-}
-
-function keyPage(key: string) {
-  return html("Your key",
-    `<div id="k" style="font-size:22px;letter-spacing:1px;background:#1c1c28;padding:16px 20px;border-radius:12px;display:inline-block">${key}</div>
-<p><button onclick="navigator.clipboard.writeText(document.getElementById('k').innerText);this.innerText='Copied'" style="padding:12px 22px;border:0;border-radius:10px;background:${GOLD};font-weight:700;font-size:15px">Copy key</button></p>
-<p style="color:#999">Valid for ${KEY_HOURS} hours on one device. Works in every supported game.</p>`);
-}
-
-function msg(title: string, body: string) {
-  return html(title, `<p style="max-width:460px;margin:0 auto;line-height:1.5">${body}</p>`);
-}
-
-function text(body: string) {
-  return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8" } });
-}
-
-function json(data: unknown) {
-  return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
-}
-
-function randomKey() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let s = "";
-  for (let i = 0; i < 16; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return "CAKE-" + s;
-}
-
-async function saveChunked(slot: string, content: string) {
-  const parts: string[] = [];
-  for (let i = 0; i < content.length; i += CHUNK_SIZE) parts.push(content.slice(i, i + CHUNK_SIZE));
-  const oldCount = (await kv.get<number>([slot, "count"])).value || 0;
-  for (let i = 0; i < Math.max(oldCount, parts.length); i++) {
-    if (i < parts.length) await kv.set([slot, "part", i], parts[i]);
-    else await kv.delete([slot, "part", i]);
-  }
-  await kv.set([slot, "count"], parts.length);
-}
-
-async function loadChunked(slot: string): Promise<string | null> {
-  const count = (await kv.get<number>([slot, "count"])).value;
-  if (!count) return null;
-  let out = "";
-  for (let i = 0; i < count; i++) {
-    const p = await kv.get<string>([slot, "part", i]);
-    if (p.value == null) return null;
-    out += p.value;
-  }
-  return out;
-}
-
-async function verifyHash(hash: string) {
-  const url = "https://publisher.linkvertise.com/api/v1/anti_bypassing?token=" +
-    encodeURIComponent(LV_TOKEN) + "&hash=" + encodeURIComponent(hash);
-  const r = await fetch(url, { method: "POST" });
-  const raw = (await r.text()).trim();
-  let ok = raw.toUpperCase() === "TRUE";
-  if (!ok) {
-    try {
-      const j = JSON.parse(raw);
-      ok = j === true || j?.status === true || String(j?.status).toUpperCase() === "TRUE" ||
-           String(j?.result).toUpperCase() === "TRUE" || j?.success === true;
-    } catch { /* not JSON */ }
-  }
-  return { ok, status: r.status, body: raw };
-}
-
-async function claim(url: URL) {
-  const hash = url.searchParams.get("hash");
-  if (!hash) {
-    return msg("Finish the link first", "Open the Linkvertise link and complete every step, then you'll land back here with your key.");
-  }
-  if ((await kv.get(["hash", hash])).value) {
-    return msg("Link already used", "That link was already redeemed. Start again from the Linkvertise link to get a fresh key.");
-  }
-  const v = await verifyHash(hash);
-  if (!v.ok) {
-    return msg("Link not verified",
-      `Go back and finish every Linkvertise step.<br><br><span style="color:#777;font-size:12px">status ${v.status} · ${v.body || "empty"}</span>`);
-  }
-  await kv.set(["hash", hash], true, { expireIn: 3600 * 1000 });
-  const key = randomKey();
-  await kv.set(["key", key], { made: Date.now(), id: null }, { expireIn: KEY_HOURS * 3600 * 1000 });
-  return keyPage(key);
-}
-
-async function script(url: URL) {
-  const key = (url.searchParams.get("key") || "").trim().toUpperCase();
-  const id = (url.searchParams.get("id") || "").trim();
-  const game = (url.searchParams.get("game") || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (!key || !id) return text("ERR:missing key");
-
-  const slot = game ? "script_" + game : "script";
-
-  if (OWNER_KEYS.includes(key)) {
-    const s = await loadChunked(slot);
-    return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
-  }
-
-  const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
-  if (!res.value) return text("ERR:invalid or expired key");
-  const data = res.value;
-
-  if (Date.now() - data.made > KEY_HOURS * 3600 * 1000) {
-    await kv.delete(["key", key]);
-    return text("ERR:invalid or expired key");
-  }
-  if (data.id && data.id !== id) return text("ERR:this key is locked to another device");
-
-  if (!data.id) {
-    data.id = id;
-    const left = Math.max(60000, data.made + KEY_HOURS * 3600 * 1000 - Date.now());
-    await kv.set(["key", key], data, { expireIn: left });
-  }
-
-  const s = await loadChunked(slot);
-  return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
-}
-
 async function loader() {
   const s = await loadChunked("loader");
   return text(s || "warn('loader not uploaded')");
@@ -201,12 +63,12 @@ async function dsoPull() {
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
-// ── Make The Logo: shared answer key ────────────────────────────────
-// one KV record holds every logo: { logo: { p: pieces, n: votes, a?: { p, n } } }
+// ── Make The Logo: shared answer key (pieces keyed by image id) ─────
 type MtlPieces = Record<string, { X: number; Y: number; L: number }>;
 type MtlEntry = { p: MtlPieces; n: number; a?: { p: MtlPieces; n: number } };
 const LOGO_RE = /^[\x20-\x7e]{1,40}$/;
-const PIECE_RE = /^p\d{1,2}$/;
+const PIECE_RE = /^a\d{1,20}(_\d{1,2})?$/;
+const MTL_KEY = ["mtl2", "all"];
 let mtlCache: { at: number; body: string } | null = null;
 
 function cleanPieces(raw: unknown): MtlPieces | null {
@@ -238,7 +100,7 @@ async function mtlPush(req: Request) {
   let body: { logos?: Record<string, unknown> };
   try { body = await req.json(); } catch { return json({ ok: false, err: "bad json" }); }
   const logos = body.logos && typeof body.logos === "object" ? body.logos : {};
-  const all = (await kv.get<Record<string, MtlEntry>>(["mtl", "all"])).value || {};
+  const all = (await kv.get<Record<string, MtlEntry>>(MTL_KEY)).value || {};
   let saved = 0;
   for (const [name, raw] of Object.entries(logos).slice(0, 40)) {
     if (!LOGO_RE.test(name)) continue;
@@ -251,14 +113,13 @@ async function mtlPush(req: Request) {
     } else if (samePieces(cur.p, p)) {
       cur.n = Math.min(cur.n + 1, 1000);
     } else {
-      // a different answer: count it separately; it only takes over if more players agree
       if (cur.a && samePieces(cur.a.p, p)) cur.a.n = Math.min(cur.a.n + 1, 1000);
       else cur.a = { p, n: 1 };
       if (cur.a.n > cur.n) { const old = { p: cur.p, n: cur.n }; cur.p = cur.a.p; cur.n = cur.a.n; cur.a = old; }
     }
     saved++;
   }
-  if (saved > 0) { await kv.set(["mtl", "all"], all); mtlCache = null; }
+  if (saved > 0) { await kv.set(MTL_KEY, all); mtlCache = null; }
   return json({ ok: true, saved });
 }
 
@@ -266,7 +127,7 @@ async function mtlPull() {
   if (mtlCache && Date.now() - mtlCache.at < 60000) {
     return new Response(mtlCache.body, { headers: { "content-type": "application/json" } });
   }
-  const all = (await kv.get<Record<string, MtlEntry>>(["mtl", "all"])).value || {};
+  const all = (await kv.get<Record<string, MtlEntry>>(MTL_KEY)).value || {};
   const out: Record<string, MtlPieces> = {};
   for (const [name, e] of Object.entries(all)) out[name] = e.p;
   const body = JSON.stringify(out);
@@ -333,7 +194,7 @@ Deno.serve(async (req) => {
     case "/dso/pull": return dsoPull();
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
-    case "/health": return text(`ok v7 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v8 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
