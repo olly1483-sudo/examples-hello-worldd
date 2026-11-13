@@ -1,4 +1,4 @@
-// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning + usage stats)
+// Olly Scripts key server — Deno Deploy (multi-game + owner keys + shared learning + usage stats + key page)
 const KEY_HOURS = 24;
 const LV_TOKEN = (Deno.env.get("LV_TOKEN") || "").trim();
 const ADMIN_TOKEN = (Deno.env.get("ADMIN_TOKEN") || "").trim();
@@ -304,6 +304,8 @@ const GAME_NAMES: Record<string, string> = {
   dso: "Don't Say The Obvious",
   hid: "Hide In Drawings",
   mtl: "Make The Logo",
+  ctw: "Connect the Words",
+  coins: "Collect 1 Million Coins",
 };
 function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
 
@@ -373,6 +375,28 @@ async function statsPage(url: URL) {
   );
 }
 
+// ── key page (a normal page with a button, not a redirect — for ScriptBlox) ──
+const KEY_LINKS: Record<string, string> = {
+  coins: "https://link-center.net/10547788/qHrlm8WScylM",
+  ctw: "https://link-target.net/10547788/G8UQJC5Sy5ZV",
+  wordrush: "https://link-center.net/10547788/4QNZsEK76ngv",
+  wordbattle: "https://link-target.net/10547788/30n6KeCfNKBj",
+  dso: "https://link-target.net/10547788/gL9XLFUZJdKG",
+  hid: "https://link-target.net/10547788/pwB4T5Aq2zKH",
+  mtl: "https://link-hub.net/10547788/5qkzp1kcmSlY",
+  medieval: "https://link-hub.net/10547788/nwHcYe9FFs9C",
+};
+
+function getKeyPage(url: URL) {
+  const game = (url.searchParams.get("game") || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  const link = KEY_LINKS[game];
+  if (!link) return html("Get your key", `<p style="color:#999">Unknown game.</p>`);
+  return html("Get your key — " + gameName(game),
+    `<p style="max-width:460px;margin:0 auto 18px;line-height:1.5;color:#bbb">Tap the button, finish the steps, and your key appears at the end.</p>
+<p><a href="${link}" style="display:inline-block;padding:14px 26px;border-radius:12px;background:${GOLD};color:#10101a;font-weight:700;font-size:16px;text-decoration:none">Get key</a></p>
+<p style="color:#999">Then paste it into the script menu and tap Run.</p>`);
+}
+
 // ── admin ─────────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
@@ -390,6 +414,8 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_dso">script_dso — Don't Say The Obvious</option>
 <option value="script_hid">script_hid — Hide In Drawings</option>
 <option value="script_mtl">script_mtl — Make The Logo</option>
+<option value="script_ctw">script_ctw — Connect the Words</option>
+<option value="script_coins">script_coins — Collect 1 Million Coins</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -427,6 +453,7 @@ Deno.serve(async (req) => {
   const url = new URL(req.url);
   switch (url.pathname) {
     case "/claim": return claim(url);
+    case "/getkey": return getKeyPage(url);
     case "/script": return script(url);
     case "/loader": return loader();
     case "/dso/push": return req.method === "POST" ? dsoPush(req) : json({ ok: false });
@@ -434,7 +461,7 @@ Deno.serve(async (req) => {
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
-    case "/health": return text(`ok v9 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v10 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
