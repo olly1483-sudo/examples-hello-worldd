@@ -377,14 +377,13 @@ async function statsPage(url: URL) {
 
 // ── key page (a normal page with a button, not a redirect — for ScriptBlox) ──
 const KEY_LINKS: Record<string, string> = {
-  coins: "https://link-center.net/10547788/qHrlm8WScylM",
+  wordrush: "https://direct-link.net/10547788/gyBw3vHFJ871",
+  wordbattle: "https://link-center.net/10547788/xbvK1oKIHsyh",
+  dso: "https://link-target.net/10547788/tfp3YwhBKKoT",
+  hid: "https://direct-link.net/10547788/B186RRxQ8D6I",
+  mtl: "https://link-target.net/10547788/k2fwkPsrwmtQ",
   ctw: "https://link-target.net/10547788/G8UQJC5Sy5ZV",
-  wordrush: "https://link-center.net/10547788/4QNZsEK76ngv",
-  wordbattle: "https://link-target.net/10547788/30n6KeCfNKBj",
-  dso: "https://link-target.net/10547788/gL9XLFUZJdKG",
-  hid: "https://link-target.net/10547788/pwB4T5Aq2zKH",
-  mtl: "https://link-hub.net/10547788/5qkzp1kcmSlY",
-  medieval: "https://link-hub.net/10547788/nwHcYe9FFs9C",
+  coins: "https://link-center.net/10547788/qHrlm8WScylM",
 };
 
 function getKeyPage(url: URL) {
@@ -461,7 +460,7 @@ Deno.serve(async (req) => {
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
-    case "/health": return text(`ok v10 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v11 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
