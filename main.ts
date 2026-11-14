@@ -306,6 +306,7 @@ const GAME_NAMES: Record<string, string> = {
   mtl: "Make The Logo",
   ctw: "Connect the Words",
   coins: "Collect 1 Million Coins",
+  bugs: "Clean The Bugs",
 };
 function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
 
@@ -384,6 +385,7 @@ const KEY_LINKS: Record<string, string> = {
   mtl: "https://link-target.net/10547788/k2fwkPsrwmtQ",
   ctw: "https://link-target.net/10547788/G8UQJC5Sy5ZV",
   coins: "https://link-center.net/10547788/qHrlm8WScylM",
+  bugs: "https://link-target.net/10547788/LtKpBUCB7bF5",
 };
 
 function getKeyPage(url: URL) {
@@ -415,6 +417,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_mtl">script_mtl — Make The Logo</option>
 <option value="script_ctw">script_ctw — Connect the Words</option>
 <option value="script_coins">script_coins — Collect 1 Million Coins</option>
+<option value="script_bugs">script_bugs — Clean The Bugs</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -460,7 +463,7 @@ Deno.serve(async (req) => {
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
-    case "/health": return text(`ok v11 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v12 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
