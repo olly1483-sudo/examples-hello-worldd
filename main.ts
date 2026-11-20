@@ -42,7 +42,7 @@ function randomKey() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let s = "";
   for (let i = 0; i < 16; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return "CAKE-" + s;
+  return "COOB-" + s;
 }
 
 async function saveChunked(slot: string, content: string) {
@@ -488,7 +488,7 @@ Deno.serve(async (req) => {
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
-    case "/health": return text(`ok v14 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v15 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
