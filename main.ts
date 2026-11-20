@@ -138,11 +138,12 @@ async function script(url: URL) {
     return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
   }
 
-  const res = await kv.get<{ made: number; id: string | null }>(["key", key]);
+  const res = await kv.get<{ made: number; id: string | null; hours?: number }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
 
-  if (Date.now() - data.made > KEY_HOURS * 3600 * 1000) {
+  const life = (data.hours || KEY_HOURS) * 3600 * 1000;
+  if (Date.now() - data.made > life) {
     await kv.delete(["key", key]);
     return text("ERR:invalid or expired key");
   }
@@ -150,7 +151,7 @@ async function script(url: URL) {
 
   if (!data.id) {
     data.id = id;
-    const left = Math.max(60000, data.made + KEY_HOURS * 3600 * 1000 - Date.now());
+    const left = Math.max(60000, data.made + life - Date.now());
     await kv.set(["key", key], data, { expireIn: left });
   }
 
@@ -400,6 +401,26 @@ function getKeyPage(url: URL) {
 <p style="color:#999">Then paste it into the script menu and tap Run.</p>`);
 }
 
+// ── private page: make a 48-hour key by hand (for people the key link failed) ──
+const GIFT_HOURS = 48;
+async function makeKeyPage(url: URL) {
+  const pass = url.searchParams.get("pass") || "";
+  if (!ADMIN_TOKEN || pass !== ADMIN_TOKEN) return html("Not found", "");
+  if (url.searchParams.get("go") !== "1") {
+    return html("Make a key",
+      `<p style="color:#bbb">Makes a key that lasts ${GIFT_HOURS} hours on one device.</p>
+<form method="GET" action="/makekey"><input type="hidden" name="pass" value="${pass.replace(/"/g, "&quot;")}"><input type="hidden" name="go" value="1">
+<button style="padding:14px 26px;border:0;border-radius:12px;background:${GOLD};font-weight:700;font-size:16px">Make key</button></form>`);
+  }
+  const key = randomKey();
+  await kv.set(["key", key], { made: Date.now(), id: null, hours: GIFT_HOURS }, { expireIn: GIFT_HOURS * 3600 * 1000 });
+  return html("Key made",
+    `<div id="k" style="font-size:22px;letter-spacing:1px;background:#1c1c28;padding:16px 20px;border-radius:12px;display:inline-block">${key}</div>
+<p><button onclick="navigator.clipboard.writeText(document.getElementById('k').innerText);this.innerText='Copied'" style="padding:12px 22px;border:0;border-radius:10px;background:${GOLD};font-weight:700;font-size:15px">Copy key</button></p>
+<p style="color:#999">Lasts ${GIFT_HOURS} hours from now, locks to the first device that uses it.</p>
+<p><a href="/makekey?pass=${encodeURIComponent(pass)}" style="color:${GOLD}">Make another</a></p>`);
+}
+
 // ── admin ─────────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
@@ -466,7 +487,8 @@ Deno.serve(async (req) => {
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
-    case "/health": return text(`ok v13 · owner keys: ${OWNER_KEYS.length}`);
+    case "/makekey": return makeKeyPage(url);
+    case "/health": return text(`ok v14 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
