@@ -84,6 +84,16 @@ async function verifyHash(hash: string) {
   return { ok, status: r.status, body: raw };
 }
 
+// Work.ink: the link's destination ends with &src=wk&hash={TOKEN}; we ask Work.ink if that
+// token is real and delete it so it can only be used once.
+async function verifyWorkInk(token: string) {
+  const r = await fetch("https://work.ink/_api/v2/token/isValid/" + encodeURIComponent(token) + "?deleteToken=1");
+  const raw = (await r.text()).trim();
+  let ok = false;
+  try { ok = JSON.parse(raw)?.valid === true; } catch { /* not JSON */ }
+  return { ok, status: r.status, body: raw.slice(0, 200) };
+}
+
 // ── usage tracking ─────────────────────────────────────────────────────
 function dayStamp(d = new Date()) {
   return d.toISOString().slice(0, 10);
@@ -104,15 +114,16 @@ async function trackRun(game: string, id: string, owner: boolean) {
 async function claim(url: URL) {
   const hash = url.searchParams.get("hash");
   if (!hash) {
-    return msg("Finish the link first", "Open the Linkvertise link and complete every step, then you'll land back here with your key.");
+    return msg("Finish the link first", "Open the key link and complete every step, then you'll land back here with your key.");
   }
   if ((await kv.get(["hash", hash])).value) {
-    return msg("Link already used", "That link was already redeemed. Start again from the Linkvertise link to get a fresh key.");
+    return msg("Link already used", "That link was already redeemed. Start again from the key link to get a fresh key.");
   }
-  const v = await verifyHash(hash);
+  const isWorkInk = url.searchParams.get("src") === "wk";
+  const v = isWorkInk ? await verifyWorkInk(hash) : await verifyHash(hash);
   if (!v.ok) {
     return msg("Link not verified",
-      `Go back and finish every Linkvertise step.<br><br><span style="color:#777;font-size:12px">status ${v.status} · ${v.body || "empty"}</span>`);
+      `Go back and finish every step of the key link.<br><br><span style="color:#777;font-size:12px">status ${v.status} · ${v.body || "empty"}</span>`);
   }
   await kv.set(["hash", hash], true, { expireIn: 3600 * 1000 });
   const key = randomKey();
@@ -321,6 +332,7 @@ const GAME_NAMES: Record<string, string> = {
   bugs: "Clean The Bugs",
   shred: "Shred The Cash",
   universal: "Universal (keyless)",
+  pd: "Puzzle Duels",
 };
 function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
 
@@ -401,11 +413,13 @@ const KEY_LINKS: Record<string, string> = {
   coins: "https://link-center.net/10547788/qHrlm8WScylM",
   bugs: "https://link-target.net/10547788/LtKpBUCB7bF5",
   shred: "https://direct-link.net/10547788/BONsmXW2q35h",
+  pd: "",   // Puzzle Duels: paste its key link here once it's made
 };
 
 function getKeyPage(url: URL) {
   const game = (url.searchParams.get("game") || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const link = KEY_LINKS[game];
+  if (link === "") return html("Get your key — " + gameName(game), `<p style="color:#999">The key link for this game is coming very soon. Check the Discord.</p>`);
   if (!link) return html("Get your key", `<p style="color:#999">Unknown game.</p>`);
   return html("Get your key — " + gameName(game),
     `<p style="max-width:460px;margin:0 auto 18px;line-height:1.5;color:#bbb">Tap the button, finish the steps, and your key appears at the end.</p>
@@ -455,6 +469,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_bugs">script_bugs — Clean The Bugs</option>
 <option value="script_shred">script_shred — Shred The Cash</option>
 <option value="script_universal">script_universal — Universal (keyless)</option>
+<option value="script_pd">script_pd — Puzzle Duels</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -502,7 +517,7 @@ Deno.serve(async (req) => {
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
-    case "/health": return text(`ok v16 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v18 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
