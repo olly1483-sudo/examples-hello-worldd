@@ -413,7 +413,7 @@ const KEY_LINKS: Record<string, string> = {
   coins: "https://link-center.net/10547788/qHrlm8WScylM",
   bugs: "https://link-target.net/10547788/LtKpBUCB7bF5",
   shred: "https://direct-link.net/10547788/BONsmXW2q35h",
-  pd: "",   // Puzzle Duels: paste its key link here once it's made
+  pd: "https://link-center.net/10547788/vKjXkPkPoqFR",
 };
 
 function getKeyPage(url: URL) {
