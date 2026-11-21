@@ -160,6 +160,17 @@ async function script(url: URL) {
   return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
 }
 
+// keyless scripts: anyone can run these, no key needed. Only slots listed here.
+const FREE_GAMES = ["universal", "ui"];
+async function free(url: URL) {
+  const id = (url.searchParams.get("id") || "").trim().slice(0, 20);
+  const game = (url.searchParams.get("game") || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!FREE_GAMES.includes(game)) return text("ERR:that script isn't keyless");
+  if (id && /^[0-9]+$/.test(id) && game !== "ui") await trackRun(game, id, false);
+  const s = await loadChunked("script_" + game);
+  return text(s || `ERR:no script uploaded for ${game} yet`);
+}
+
 async function loader() {
   const s = await loadChunked("loader");
   return text(s || "warn('loader not uploaded')");
@@ -309,6 +320,7 @@ const GAME_NAMES: Record<string, string> = {
   coins: "Collect 1 Million Coins",
   bugs: "Clean The Bugs",
   shred: "Shred The Cash",
+  universal: "Universal (keyless)",
 };
 function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
 
@@ -442,6 +454,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_coins">script_coins — Collect 1 Million Coins</option>
 <option value="script_bugs">script_bugs — Clean The Bugs</option>
 <option value="script_shred">script_shred — Shred The Cash</option>
+<option value="script_universal">script_universal — Universal (keyless)</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -482,13 +495,14 @@ Deno.serve(async (req) => {
     case "/getkey": return getKeyPage(url);
     case "/script": return script(url);
     case "/loader": return loader();
+    case "/free": return free(url);
     case "/dso/push": return req.method === "POST" ? dsoPush(req) : json({ ok: false });
     case "/dso/pull": return dsoPull();
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
-    case "/health": return text(`ok v15 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v16 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
