@@ -248,7 +248,7 @@ async function dsoPull() {
 }
 
 // ── Make The Logo: shared answer key (pieces keyed by image id) ───────
-type MtlPieces = Record<string, { X: number; Y: number; L: number }>;
+type MtlPieces = Record<string, { X: number; Y: number; L: number; W?: number; H?: number }>;
 type MtlEntry = { p: MtlPieces; n: number; a?: { p: MtlPieces; n: number } };
 const LOGO_RE = /^[\x20-\x7e]{1,40}$/;
 const PIECE_RE = /^a\d{1,20}(_\d{1,2})?$/;
@@ -265,6 +265,11 @@ function cleanPieces(raw: unknown): MtlPieces | null {
     const X = Number(o.X), Y = Number(o.Y), L = Number(o.L ?? 0);
     if (!isFinite(X) || !isFinite(Y) || X < 0 || X > 1 || Y < 0 || Y > 1) return null;
     out[id] = { X: Math.round(X * 1e5) / 1e5, Y: Math.round(Y * 1e5) / 1e5, L: isFinite(L) ? Math.round(L) : 0 };
+    // piece size (newer logos cut every piece from one picture, so size tells them apart)
+    const W = Number(o.W), H = Number(o.H);
+    if (isFinite(W) && isFinite(H) && W > 0 && W <= 2 && H > 0 && H <= 2) {
+      out[id].W = Math.round(W * 1e5) / 1e5; out[id].H = Math.round(H * 1e5) / 1e5;
+    }
     if (++n > 12) return null;
   }
   return n > 0 ? out : null;
@@ -296,6 +301,9 @@ async function mtlPush(req: Request) {
       all[name] = { p, n: 1 };
     } else if (samePieces(cur.p, p)) {
       cur.n = Math.min(cur.n + 1, 1000);
+      // upgrade an old copy that had no piece sizes
+      const hasW = (x: MtlPieces) => Object.values(x).some((v) => v.W !== undefined);
+      if (hasW(p) && !hasW(cur.p)) cur.p = p;
     } else {
       if (cur.a && samePieces(cur.a.p, p)) cur.a.n = Math.min(cur.a.n + 1, 1000);
       else cur.a = { p, n: 1 };
@@ -517,7 +525,7 @@ Deno.serve(async (req) => {
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
-    case "/health": return text(`ok v18 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v19 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
