@@ -38,11 +38,11 @@ function json(data: unknown) {
   return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
 }
 
-function randomKey() {
+function randomKey(prefix = "COOB-") {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let s = "";
   for (let i = 0; i < 16; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return "COOB-" + s;
+  return prefix + s;
 }
 
 async function saveChunked(slot: string, content: string) {
@@ -149,9 +149,18 @@ async function script(url: URL) {
     return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
   }
 
-  const res = await kv.get<{ made: number; id: string | null; hours?: number }>(["key", key]);
+  const res = await kv.get<{ made: number; id: string | null; hours?: number; lifetime?: boolean; note?: string }>(["key", key]);
   if (!res.value) return text("ERR:invalid or expired key");
   const data = res.value;
+
+  // premium keys never run out, and lock to the first Roblox account that uses them
+  if (data.lifetime) {
+    if (data.id && data.id !== id) return text("ERR:this key is locked to another Roblox account");
+    if (!data.id) { data.id = id; await kv.set(["key", key], data); }
+    await trackRun(game, id, false);
+    const s = await loadChunked(slot);
+    return text(s || `ERR:no script uploaded for ${game || "this game"} yet`);
+  }
 
   const life = (data.hours || KEY_HOURS) * 3600 * 1000;
   if (Date.now() - data.made > life) {
@@ -455,6 +464,44 @@ async function makeKeyPage(url: URL) {
 <p><a href="/makekey?pass=${encodeURIComponent(pass)}" style="color:${GOLD}">Make another</a></p>`);
 }
 
+// ── private page: lifetime PREMIUM keys (one Roblox account each, never expire) ──
+async function premiumPage(url: URL) {
+  const pass = url.searchParams.get("pass") || "";
+  if (!ADMIN_TOKEN || pass !== ADMIN_TOKEN) return html("Not found", "");
+  const p = encodeURIComponent(pass);
+  const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+  let made = "";
+  const act = url.searchParams.get("act");
+  if (act === "make") {
+    const note = (url.searchParams.get("note") || "").slice(0, 60);
+    const key = randomKey("PREMIUM-");
+    await kv.set(["key", key], { made: Date.now(), id: null, lifetime: true, note });
+    await kv.set(["premium", key], { made: Date.now(), note });
+    made = `<div id="k" style="font-size:20px;letter-spacing:1px;background:#1c1c28;padding:16px 20px;border-radius:12px;display:inline-block;word-break:break-all">${key}</div>
+<p><button onclick="navigator.clipboard.writeText(document.getElementById('k').innerText);this.innerText='Copied'" style="padding:12px 22px;border:0;border-radius:10px;background:${GOLD};font-weight:700;font-size:15px">Copy key</button></p>
+<p style="color:#999">Lasts forever. Locks to the first Roblox account that uses it.</p><hr style="border-color:#333">`;
+  } else if (act === "remove") {
+    const key = (url.searchParams.get("key") || "").toUpperCase();
+    if (key.startsWith("PREMIUM-")) { await kv.delete(["key", key]); await kv.delete(["premium", key]); }
+    made = `<p style="color:#f88">Removed ${esc(key)}. It no longer works.</p>`;
+  }
+  let rows = "";
+  for await (const e of kv.list<{ made: number; note?: string }>({ prefix: ["premium"] })) {
+    const key = e.key[1] as string;
+    const live = (await kv.get<{ id: string | null }>(["key", key])).value;
+    const who = live?.id ? `account ${esc(live.id)}` : "not used yet";
+    rows += `<tr><td style="padding:6px 8px;font-family:monospace;font-size:12px">${esc(key)}</td><td style="padding:6px 8px">${esc(e.value.note || "")}</td>
+<td style="padding:6px 8px;color:#999">${who}</td>
+<td style="padding:6px 8px"><a style="color:#f88" href="/premium?pass=${p}&act=remove&key=${encodeURIComponent(key)}" onclick="return confirm('Remove this key? It will stop working.')">remove</a></td></tr>`;
+  }
+  return html("Premium keys", `${made}
+<form method="GET" action="/premium"><input type="hidden" name="pass" value="${esc(pass)}"><input type="hidden" name="act" value="make">
+<p><input name="note" maxlength="60" placeholder="Who is it for? (optional)" style="padding:12px;border-radius:10px;border:1px solid #444;background:#15151f;color:#eee;width:100%;max-width:320px;box-sizing:border-box"></p>
+<button style="padding:14px 26px;border:0;border-radius:12px;background:${GOLD};font-weight:700;font-size:16px">Make lifetime key</button></form>
+<h3 style="margin-top:28px">Your premium keys</h3>
+${rows ? `<div style="overflow-x:auto"><table style="border-collapse:collapse;font-size:13px">${rows}</table></div>` : `<p style="color:#999">None yet.</p>`}`);
+}
+
 // ── admin ─────────────────────────────────────────────────────────────
 function adminPage(msgText = "") {
   return new Response(
@@ -525,7 +572,8 @@ Deno.serve(async (req) => {
     case "/mtl/pull": return mtlPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
-    case "/health": return text(`ok v19 · owner keys: ${OWNER_KEYS.length}`);
+    case "/premium": return premiumPage(url);
+    case "/health": return text(`ok v20 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
