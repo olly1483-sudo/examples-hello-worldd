@@ -471,7 +471,7 @@ const KEY_LINKS: Record<string, string> = {
   bugs: "https://link-target.net/10547788/LtKpBUCB7bF5",
   shred: "https://direct-link.net/10547788/BONsmXW2q35h",
   pd: "https://link-center.net/10547788/vKjXkPkPoqFR",
-  ftw: "",   // put the Finish The Word key link between the quotes when you have it
+  ftw: "https://direct-link.net/10547788/xEY5rDtUBZMW",
 };
 
 function getKeyPage(url: URL) {
