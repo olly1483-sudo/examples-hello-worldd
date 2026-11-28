@@ -256,6 +256,45 @@ async function dsoPull() {
   return new Response(body, { headers: { "content-type": "application/json" } });
 }
 
+// ── Finish The Word: words the game accepted / rejected, shared by everyone ──
+const FTW_WORD = /^[a-z]{2,24}$/;
+type FtwEntry = { g: number; b: number };
+let ftwCache: { at: number; body: string } | null = null;
+
+async function ftwPush(req: Request) {
+  let body: { good?: unknown; bad?: unknown };
+  try { body = await req.json(); } catch { return json({ ok: false, err: "bad json" }); }
+  const take = (x: unknown) => (Array.isArray(x) ? x.slice(0, 300) : [])
+    .map((w) => String(w).toLowerCase().trim()).filter((w) => FTW_WORD.test(w));
+  const good = [...new Set(take(body.good))];
+  const bad = [...new Set(take(body.bad))];
+  for (const [list, field] of [[good, "g"], [bad, "b"]] as const) {
+    for (const w of list) {
+      const cur = (await kv.get<FtwEntry>(["ftw", w])).value || { g: 0, b: 0 };
+      cur[field] = Math.min(cur[field] + 1, 100000);
+      await kv.set(["ftw", w], cur);
+    }
+  }
+  if (good.length || bad.length) ftwCache = null;
+  return json({ ok: true, good: good.length, bad: bad.length });
+}
+
+async function ftwPull() {
+  if (ftwCache && Date.now() - ftwCache.at < 60000) {
+    return new Response(ftwCache.body, { headers: { "content-type": "application/json" } });
+  }
+  const good: string[] = [], bad: string[] = [];
+  for await (const e of kv.list<FtwEntry>({ prefix: ["ftw"] })) {
+    const w = String(e.key[1]);
+    const v = e.value || { g: 0, b: 0 };
+    if (v.g > 0) good.push(w);                 // the game accepted it at least once: it's a real word
+    else if (v.b >= 2) bad.push(w);            // rejected twice and never accepted
+  }
+  const body = JSON.stringify({ good, bad });
+  ftwCache = { at: Date.now(), body };
+  return new Response(body, { headers: { "content-type": "application/json" } });
+}
+
 // ── Make The Logo: shared answer key (pieces keyed by image id) ───────
 type MtlPieces = Record<string, { X: number; Y: number; L: number; W?: number; H?: number }>;
 type MtlEntry = { p: MtlPieces; n: number; a?: { p: MtlPieces; n: number } };
@@ -350,6 +389,7 @@ const GAME_NAMES: Record<string, string> = {
   shred: "Shred The Cash",
   universal: "Universal (keyless)",
   pd: "Puzzle Duels",
+  ftw: "Finish The Word",
 };
 function gameName(slot: string) { return GAME_NAMES[slot] || slot; }
 
@@ -570,10 +610,12 @@ Deno.serve(async (req) => {
     case "/dso/pull": return dsoPull();
     case "/mtl/push": return req.method === "POST" ? mtlPush(req) : json({ ok: false });
     case "/mtl/pull": return mtlPull();
+    case "/ftw/push": return req.method === "POST" ? ftwPush(req) : json({ ok: false });
+    case "/ftw/pull": return ftwPull();
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
     case "/premium": return premiumPage(url);
-    case "/health": return text(`ok v20 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v21 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
