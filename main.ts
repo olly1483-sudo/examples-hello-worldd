@@ -471,6 +471,7 @@ const KEY_LINKS: Record<string, string> = {
   bugs: "https://link-target.net/10547788/LtKpBUCB7bF5",
   shred: "https://direct-link.net/10547788/BONsmXW2q35h",
   pd: "https://link-center.net/10547788/vKjXkPkPoqFR",
+  ftw: "",   // put the Finish The Word key link between the quotes when you have it
 };
 
 function getKeyPage(url: URL) {
@@ -565,6 +566,7 @@ ${msgText ? `<p style="color:${GOLD}">${msgText}</p>` : ""}
 <option value="script_shred">script_shred — Shred The Cash</option>
 <option value="script_universal">script_universal — Universal (keyless)</option>
 <option value="script_pd">script_pd — Puzzle Duels</option>
+<option value="script_ftw">script_ftw — Finish The Word</option>
 <option value="loader">loader — the loader everyone runs</option>
 </select></label><br>
 <label style="color:#999;font-size:13px">Or type a new slot (for future games, e.g. script_mygame)<br>
@@ -615,7 +617,7 @@ Deno.serve(async (req) => {
     case "/stats": return statsPage(url);
     case "/makekey": return makeKeyPage(url);
     case "/premium": return premiumPage(url);
-    case "/health": return text(`ok v21 · owner keys: ${OWNER_KEYS.length}`);
+    case "/health": return text(`ok v22 · owner keys: ${OWNER_KEYS.length}`);
     case "/admin":
       if (req.method === "POST") return adminPost(req);
       return adminPage();
